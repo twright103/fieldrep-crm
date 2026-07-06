@@ -3,7 +3,7 @@
 // Plain IndexedDB with a small promise wrapper — no libraries.
 
 const DB_NAME = 'fieldrep';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2: outbox store for offline writes
 
 let dbPromise = null;
 
@@ -13,14 +13,19 @@ function openDb() {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      const companies = db.createObjectStore('companies', { keyPath: 'id' });
-      companies.createIndex('name', 'name');
-      const contacts = db.createObjectStore('contacts', { keyPath: 'id' });
-      contacts.createIndex('companyId', 'companyId');
-      const activities = db.createObjectStore('activities', { keyPath: 'id' });
-      activities.createIndex('companyId', 'companyId');
-      activities.createIndex('followUpDate', 'followUpDate');
-      db.createObjectStore('kv'); // lastSync timestamp, settings
+      if (!db.objectStoreNames.contains('companies')) {
+        const companies = db.createObjectStore('companies', { keyPath: 'id' });
+        companies.createIndex('name', 'name');
+        const contacts = db.createObjectStore('contacts', { keyPath: 'id' });
+        contacts.createIndex('companyId', 'companyId');
+        const activities = db.createObjectStore('activities', { keyPath: 'id' });
+        activities.createIndex('companyId', 'companyId');
+        activities.createIndex('followUpDate', 'followUpDate');
+        db.createObjectStore('kv'); // lastSync timestamp, settings
+      }
+      if (!db.objectStoreNames.contains('outbox')) {
+        db.createObjectStore('outbox', { keyPath: 'qid', autoIncrement: true });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -94,15 +99,38 @@ export async function applyRows(store, rows) {
   });
 }
 
-/** Wipes all cached data (Settings → "Reload everything"). */
+/** Wipes all cached data (Settings → "Reload everything" / disconnect). */
 export async function clearAll() {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const t = db.transaction(['companies', 'contacts', 'activities', 'kv'], 'readwrite');
-    for (const s of ['companies', 'contacts', 'activities', 'kv']) t.objectStore(s).clear();
+    const stores = ['companies', 'contacts', 'activities', 'kv', 'outbox'];
+    const t = db.transaction(stores, 'readwrite');
+    for (const s of stores) t.objectStore(s).clear();
     t.oncomplete = () => resolve();
     t.onerror = () => reject(t.error);
   });
+}
+
+// ---- outbox: writes waiting for the network (FIFO) ----
+
+export async function outboxAdd(entry) {
+  const db = await openDb();
+  return reqAsPromise(tx(db, 'outbox', 'readwrite').add({ ...entry, queuedAt: new Date().toISOString() }));
+}
+
+export async function outboxAll() {
+  const db = await openDb();
+  return reqAsPromise(tx(db, 'outbox', 'readonly').getAll());
+}
+
+export async function outboxDelete(qid) {
+  const db = await openDb();
+  return reqAsPromise(tx(db, 'outbox', 'readwrite').delete(qid));
+}
+
+export async function outboxCount() {
+  const db = await openDb();
+  return reqAsPromise(tx(db, 'outbox', 'readonly').count());
 }
 
 export async function counts() {

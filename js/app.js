@@ -3,8 +3,9 @@
 // Navigation is hash-based (#/companies, #/company/<id>, ...) so the whole
 // app is one cached HTML file that works as an installed PWA.
 
-import { api, hasCreds, saveCreds, clearCreds, getCreds, createRow, updateRow, softDelete } from './api.js';
-import { getAll, getById, getByIndex, putRow, counts, clearAll, kvGet } from './db.js';
+import { api, hasCreds, saveCreds, clearCreds, getCreds } from './api.js';
+import { getAll, getById, getByIndex, putRow, counts, clearAll, kvGet, outboxCount } from './db.js';
+import { createLocal, updateLocal, deleteLocal } from './writes.js';
 import { fullLoad, syncNow, syncSoon, syncState, onSyncChange, lastSyncTime } from './sync.js';
 
 const $view = document.getElementById('view');
@@ -73,14 +74,16 @@ function toast(msg, isError) {
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, isError ? 5000 : 2200);
 }
 
-async function tryWrite(fn, okMsg) {
+// Wraps an offline-aware write (createLocal/updateLocal/deleteLocal).
+// Distinguishes "confirmed by server" from "queued on this device".
+async function trySave(fn, okMsg) {
   try {
     const result = await fn();
-    if (okMsg) toast(okMsg);
-    syncSoon(); // pull server-side effects (updatedAt, lastActivityAt)
+    toast(result.queued ? '📴 Saved on this device — will sync when back online' : okMsg);
+    if (!result.queued) syncSoon(); // pull server-side effects (lastActivityAt etc.)
     return result;
   } catch (err) {
-    toast(err.message + (err.kind === 'network' ? ' — change NOT saved, try again when back online.' : ''), true);
+    toast(err.message, true);
     return null;
   }
 }
@@ -99,6 +102,9 @@ const routes = [
   [/^#\/company\/([^/]+)\/log$/, m => viewActivityForm(m[1])],
   [/^#\/company\/([^/]+)\/contact\/new$/, m => viewContactForm(null, m[1])],
   [/^#\/contact\/([^/]+)\/edit$/, m => viewContactForm(m[1], null)],
+  [/^#\/contact\/([^/]+)\/email$/, m => viewQuickEmail(m[1])],
+  [/^#\/fixpins$/, viewFixPins],
+  [/^#\/fixpin\/([^/]+)$/, m => viewFixPin(m[1])],
   [/^#\/company\/([^/]+)$/, m => viewCompany(m[1])],
   [/^#\/route$/, viewRoute],
   [/^#\/followups$/, viewFollowups],
@@ -495,7 +501,8 @@ async function viewCompany(id) {
             <span class="contactlinks">
               ${p.phoneMobile ? `<a href="tel:${esc(p.phoneMobile.replace(/[^+\d]/g, ''))}">📱 ${esc(p.phoneMobile)}</a>` : ''}
               ${p.phoneOffice ? `<a href="tel:${esc(p.phoneOffice.replace(/[^+\d]/g, ''))}">☎️ ${esc(p.phoneOffice)}</a>` : ''}
-              ${p.email ? `<a href="mailto:${esc(p.email)}" data-logmail="${esc(p.id)}">✉️ ${esc(p.email)}</a>` : ''}
+              ${p.email ? `<a href="mailto:${esc(p.email)}" data-logmail="${esc(p.id)}">✉️ ${esc(p.email)}</a>
+              <a href="#/contact/${esc(p.id)}/email">⚡ Quick send</a>` : ''}
             </span>
           </span>
           <a class="card-side editlink" href="#/contact/${esc(p.id)}/edit">Edit</a>
@@ -525,7 +532,7 @@ async function viewCompany(id) {
       const contactId = link.getAttribute('data-logmail');
       setTimeout(async () => {
         if (confirm('Log this email as an activity?')) {
-          await tryWrite(() => createRow('Activities', {
+          await trySave(() => createLocal('Activities', {
             companyId: id, contactId, type: 'email',
             occurredAt: new Date().toISOString(),
             subject: 'Email sent', body: '', followUpDone: 'FALSE',
@@ -583,24 +590,22 @@ async function viewCompanyForm(id) {
     fd.state = fd.state.trim().toUpperCase();
     fd.territoryState = ['GA', 'SC', 'NC', 'TN', 'AL', 'FL'].includes(fd.state) ? fd.state : '';
 
-    const result = await tryWrite(async () => {
-      if (id) return (await updateRow('Companies', { id, ...fd })).row;
-      const created = (await createRow('Companies', { ...fd, deleted: 'FALSE' })).row;
-      // new company: ask the backend to geocode it right away (spec §8)
-      api('geocode', { id: created.id }).catch(() => {});
-      return created;
+    const result = await trySave(async () => {
+      if (id) return updateLocal('Companies', { id, ...fd });
+      const r = await createLocal('Companies', { ...fd });
+      // new company: ask the backend to geocode it right away (spec §8);
+      // if created offline, the outbox flush triggers the geocode instead
+      if (!r.queued) api('geocode', { id: r.row.id }).catch(() => {});
+      return r;
     }, id ? 'Saved' : 'Company created');
-    if (result) {
-      await putRow('companies', result);
-      location.hash = '#/company/' + result.id;
-    }
+    if (result) location.hash = '#/company/' + result.row.id;
   };
 
   const del = document.getElementById('delbtn');
   if (del) del.onclick = async () => {
     if (!confirm(`Delete ${c.name}? (It is only hidden, never truly erased — recoverable from the Sheet.)`)) return;
-    const ok = await tryWrite(() => softDelete('Companies', id), 'Company deleted');
-    if (ok) { const { deleteRow } = await import('./db.js'); await deleteRow('companies', id); location.hash = '#/companies'; }
+    const ok = await trySave(() => deleteLocal('Companies', id), 'Company deleted');
+    if (ok) location.hash = '#/companies';
   };
 }
 
@@ -633,18 +638,18 @@ async function viewContactForm(contactId, companyId) {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target).entries());
     if (!fd.firstName.trim()) { toast('First name is required', true); return; }
-    const result = await tryWrite(async () => {
-      if (contactId) return (await updateRow('Contacts', { id: contactId, ...fd })).row;
-      return (await createRow('Contacts', { ...fd, companyId: backId, deleted: 'FALSE' })).row;
-    }, contactId ? 'Saved' : 'Contact added');
-    if (result) { await putRow('contacts', result); location.hash = '#/company/' + backId; }
+    const result = await trySave(() =>
+      contactId ? updateLocal('Contacts', { id: contactId, ...fd })
+        : createLocal('Contacts', { ...fd, companyId: backId }),
+      contactId ? 'Saved' : 'Contact added');
+    if (result) location.hash = '#/company/' + backId;
   };
 
   const del = document.getElementById('delbtn');
   if (del) del.onclick = async () => {
     if (!confirm('Delete this contact?')) return;
-    const ok = await tryWrite(() => softDelete('Contacts', contactId), 'Contact deleted');
-    if (ok) { const { deleteRow } = await import('./db.js'); await deleteRow('contacts', contactId); location.hash = '#/company/' + backId; }
+    const ok = await trySave(() => deleteLocal('Contacts', contactId), 'Contact deleted');
+    if (ok) location.hash = '#/company/' + backId;
   };
 }
 
@@ -691,17 +696,137 @@ async function viewActivityForm(companyId) {
     e.preventDefault();
     const fd = Object.fromEntries(new FormData(e.target).entries());
     const occurred = fd.occurredAt ? new Date(fd.occurredAt).toISOString() : new Date().toISOString();
-    const result = await tryWrite(() => createRow('Activities', {
+    const result = await trySave(() => createLocal('Activities', {
       companyId, contactId: fd.contactId, type,
       occurredAt: occurred, subject: fd.subject, body: fd.body,
       followUpDate: fd.followUpDate || '', followUpDone: 'FALSE',
     }), 'Activity saved');
     if (result) {
-      await putRow('activities', result.row);
+      // keep the local company card fresh even before the server bump syncs back
       c.lastActivityAt = occurred > (c.lastActivityAt || '') ? occurred : c.lastActivityAt;
       await putRow('companies', c);
       location.hash = '#/company/' + companyId;
     }
+  };
+}
+
+// ---------------------------------------------------------------- quick email (spec §10)
+
+async function viewQuickEmail(contactId) {
+  const p = await getById('contacts', contactId);
+  if (!p || !p.email) { location.hash = '#/companies'; return; }
+  const c = p.companyId ? await getById('companies', p.companyId) : null;
+
+  $view.innerHTML = `
+  <div class="pad">
+    <a class="backlink" href="#/company/${esc(p.companyId || '')}">‹ Back</a>
+    <h1>Quick email</h1>
+    <p class="muted">Sends from your real Gmail (lands in your Sent folder) and logs
+       the activity automatically. Needs signal — for longer emails use the ✉️ link
+       to compose in Gmail itself.</p>
+    <form id="form">
+      <label>To<input value="${esc((p.firstName + ' ' + p.lastName).trim())} &lt;${esc(p.email)}&gt;" disabled></label>
+      <label>Subject<input name="subject" required></label>
+      <label>Message<textarea name="body" rows="8" required></textarea></label>
+      <button class="btn primary big" type="submit">Send</button>
+    </form>
+  </div>`;
+
+  document.getElementById('form').onsubmit = async e => {
+    e.preventDefault();
+    const fd = Object.fromEntries(new FormData(e.target).entries());
+    const btn = e.target.querySelector('button');
+    btn.disabled = true; btn.textContent = 'Sending…';
+    try {
+      await api('sendEmail', { to: p.email, subject: fd.subject, body: fd.body });
+      toast('Sent to ' + p.email + ' and logged');
+      syncSoon(); // pulls the auto-created activity
+      location.hash = '#/company/' + (p.companyId || '');
+    } catch (err) {
+      btn.disabled = false; btn.textContent = 'Send';
+      toast(err.kind === 'network'
+        ? 'No signal — quick send needs a connection (emails are never queued, so nothing stale can fire later)'
+        : err.message, true);
+    }
+  };
+}
+
+// ---------------------------------------------------------------- pin fix-up (spec §8)
+
+async function viewFixPins() {
+  const companies = (await getAll('companies')).filter(c => !c.lat || c.geocodeStatus !== 'ok');
+  const failed = companies.filter(c => !c.lat);
+  const rough = companies.filter(c => c.lat); // city-level approximations
+
+  const item = c => `
+    <li><a class="card" href="#/fixpin/${esc(c.id)}">
+      <span class="card-main">
+        <span class="card-title">${esc(c.name)}</span>
+        <span class="card-sub">${esc([c.street, c.city, c.state].filter(Boolean).join(', ') || 'no address on file')}</span>
+      </span>
+      <span class="card-side">${c.lat ? 'rough' : 'no pin'}</span>
+    </a></li>`;
+
+  $view.innerHTML = `
+  <div class="pad">
+    <h1>Fix map pins</h1>
+    <p class="muted">These companies couldn't be located precisely by the geocoders.
+       Tap one, then tap the map where it actually is.</p>
+    <h2>No pin at all (${failed.length})</h2>
+    <ul class="cardlist">${failed.map(item).join('') || '<li class="muted pad-s">None 🎉</li>'}</ul>
+    <h2>City-level only — worth nudging (${rough.length})</h2>
+    <ul class="cardlist">${rough.map(item).join('') || '<li class="muted pad-s">None 🎉</li>'}</ul>
+  </div>`;
+}
+
+async function viewFixPin(id) {
+  const c = await getById('companies', id);
+  if (!c) { location.hash = '#/fixpins'; return; }
+
+  $view.innerHTML = `
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div class="fixbar">
+      <b>${esc(c.name)}</b>
+      <span>${esc([c.street, c.city, c.state, c.zip].filter(Boolean).join(', ') || 'no address on file')}</span>
+      <span class="muted">Tap the map where this company is, then Save.</span>
+    </div>
+    <div class="fixactions">
+      <a class="btn" href="#/fixpins">Cancel</a>
+      <button class="btn primary" id="savepin" disabled>Save pin</button>
+    </div>
+  </div>`;
+
+  const map = L.map('map', { zoomControl: false });
+  leafletMap = map;
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }).addTo(map);
+  if (c.lat) map.setView([Number(c.lat), Number(c.lng)], 14);
+  else map.setView([33.5, -83.5], 6);
+  if (c.lat) L.circleMarker([Number(c.lat), Number(c.lng)], {
+    radius: 7, color: '#fff', weight: 1.5, fillColor: '#999', fillOpacity: 0.7,
+  }).addTo(map).bindTooltip('current rough position');
+
+  let placed = null, chosen = null;
+  map.on('click', e => {
+    chosen = e.latlng;
+    if (placed) map.removeLayer(placed);
+    placed = L.circleMarker(chosen, { radius: 9, color: '#fff', weight: 2, fillColor: '#1668b8', fillOpacity: 1 }).addTo(map);
+    document.getElementById('savepin').disabled = false;
+  });
+
+  document.getElementById('savepin').onclick = async () => {
+    if (!chosen) return;
+    const result = await trySave(() => updateLocal('Companies', {
+      id,
+      lat: String(Math.round(chosen.lat * 1e6) / 1e6),
+      lng: String(Math.round(chosen.lng * 1e6) / 1e6),
+      geocodeStatus: 'ok',
+    }), 'Pin saved for ' + c.name);
+    if (result) location.hash = '#/fixpins';
   };
 }
 
@@ -954,8 +1079,8 @@ async function viewFollowups() {
     if (!btn) return;
     btn.disabled = true;
     const a = activities.find(x => x.id === btn.dataset.done);
-    const result = await tryWrite(() => updateRow('Activities', { id: a.id, followUpDone: 'TRUE' }), 'Marked done');
-    if (result) { await putRow('activities', result.row); render(); }
+    const result = await trySave(() => updateLocal('Activities', { id: a.id, followUpDone: 'TRUE' }), 'Marked done');
+    if (result) render();
     else btn.disabled = false;
   };
 }
@@ -966,6 +1091,8 @@ async function viewSettings() {
   const n = await counts();
   const last = await lastSyncTime();
   const meta = (await kvGet('meta')) || {};
+  const pending = await outboxCount();
+  const pinsToFix = (await getAll('companies')).filter(c => !c.lat || c.geocodeStatus !== 'ok').length;
   let persisted = false;
   if (navigator.storage && navigator.storage.persisted) persisted = await navigator.storage.persisted();
 
@@ -975,10 +1102,12 @@ async function viewSettings() {
     <div class="factbox">
       <div>Cached here: <b>${n.companies}</b> companies, <b>${n.contacts}</b> contacts, <b>${n.activities}</b> activities</div>
       <div>Last synced: <b>${last ? esc(new Date(last).toLocaleString()) : 'never'}</b></div>
+      ${pending ? `<div class="overdue">📴 Waiting to sync: ${pending} change${pending === 1 ? '' : 's'} (sends automatically when back online)</div>` : ''}
       <div>Storage protected from cleanup: <b>${persisted ? 'yes' : 'not yet'}</b></div>
       ${meta.migratedAt ? `<div class="muted">Data migrated from MMC: ${esc(fmtDate(meta.migratedAt))}</div>` : ''}
       ${syncState.lastError ? `<div class="overdue">Last sync error: ${esc(syncState.lastError)}</div>` : ''}
     </div>
+    ${pinsToFix ? `<a class="btn" href="#/fixpins">📍 Fix map pins (${pinsToFix})</a>` : ''}
     <button class="btn" id="syncbtn">Sync now</button>
     <button class="btn" id="reloadbtn">Re-download everything</button>
     <button class="btn danger" id="disconnect">Disconnect this device</button>
@@ -1013,6 +1142,9 @@ onSyncChange(() => { $syncdot.classList.toggle('on', syncState.running); });
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && hasCreds()) syncSoon();
 });
+
+// signal came back: push queued writes (sync flushes the outbox first)
+window.addEventListener('online', () => { if (hasCreds()) syncSoon(); });
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(() => {});

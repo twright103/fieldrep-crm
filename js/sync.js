@@ -8,6 +8,7 @@
 
 import { api } from './api.js';
 import { applyRows, kvGet, kvSet } from './db.js';
+import { flushOutbox } from './writes.js';
 
 const LAST_SYNC = 'lastSync';
 
@@ -55,6 +56,7 @@ export async function syncNow() {
   syncState.lastError = null;
   notify();
   try {
+    await flushOutbox(); // push queued offline writes BEFORE pulling changes
     const since = await lastSyncTime();
     if (!since) {
       await fullLoadInner();

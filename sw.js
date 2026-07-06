@@ -4,7 +4,7 @@
 //
 // To ship an update: bump CACHE_VERSION. Old caches are cleaned on activate.
 
-const CACHE_VERSION = 'fieldrep-v11';
+const CACHE_VERSION = 'fieldrep-v12';
 
 const SHELL = [
   './',
@@ -19,6 +19,7 @@ const SHELL = [
   './js/api.js',
   './js/db.js',
   './js/sync.js',
+  './js/writes.js',
   './manifest.json',
   './icons/icon-192.png',
   './icons/icon-512.png',
