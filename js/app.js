@@ -226,6 +226,7 @@ const GROUP_COLOR_DEFAULT = '#1a1a1a';
 
 function groupColor(group) {
   const key = (group || '').split(';')[0].trim().toLowerCase();
+  if (key.startsWith('lamothermic')) return GROUP_COLORS['lamothermic']; // incl. "Lamothermic Lead" etc.
   return GROUP_COLORS[key] || GROUP_COLOR_DEFAULT;
 }
 
