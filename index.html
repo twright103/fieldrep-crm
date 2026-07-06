@@ -12,7 +12,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="FieldRep">
+  <link rel="stylesheet" href="./vendor/leaflet.css">
+  <link rel="stylesheet" href="./vendor/MarkerCluster.css">
+  <link rel="stylesheet" href="./vendor/MarkerCluster.Default.css">
   <link rel="stylesheet" href="./css/app.css">
+  <script src="./vendor/leaflet.js"></script>
+  <script src="./vendor/leaflet.markercluster.js"></script>
 </head>
 <body>
   <header id="topbar">
@@ -23,6 +28,7 @@
   <main id="view"><div class="pad muted">Loading…</div></main>
 
   <nav id="tabbar">
+    <a href="#/map"><span>🗺️</span>Map</a>
     <a href="#/companies"><span>🏭</span>Companies</a>
     <a href="#/followups"><span>✅</span>Follow-ups</a>
     <a href="#/settings"><span>⚙️</span>Settings</a>

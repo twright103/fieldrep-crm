@@ -4,12 +4,17 @@
 //
 // To ship an update: bump CACHE_VERSION. Old caches are cleaned on activate.
 
-const CACHE_VERSION = 'fieldrep-v4';
+const CACHE_VERSION = 'fieldrep-v5';
 
 const SHELL = [
   './',
   './index.html',
   './css/app.css',
+  './vendor/leaflet.js',
+  './vendor/leaflet.css',
+  './vendor/leaflet.markercluster.js',
+  './vendor/MarkerCluster.css',
+  './vendor/MarkerCluster.Default.css',
   './js/app.js',
   './js/api.js',
   './js/db.js',

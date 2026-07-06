@@ -92,6 +92,7 @@ const TYPE_ICONS = { call: '📞', visit: '🚗', email: '✉️', meeting: '�
 
 const routes = [
   [/^#\/setup$/, viewSetup],
+  [/^#\/map$/, viewMap],
   [/^#\/companies$/, viewCompanies],
   [/^#\/company\/new$/, () => viewCompanyForm(null)],
   [/^#\/company\/([^/]+)\/edit$/, m => viewCompanyForm(m[1])],
@@ -108,7 +109,8 @@ async function render() {
     location.hash = '#/setup';
     return;
   }
-  const hash = location.hash || '#/companies';
+  if (leafletMap) { leafletMap.remove(); leafletMap = null; } // tear down map on view change
+  const hash = location.hash || '#/map';
   for (const [re, fn] of routes) {
     const m = hash.match(re);
     if (m) {
@@ -122,7 +124,7 @@ async function render() {
       return;
     }
   }
-  location.hash = '#/companies';
+  location.hash = '#/map';
 }
 
 function highlightTab(hash) {
@@ -201,6 +203,179 @@ async function viewSetup() {
   function clearIfAuthFailed(err) {
     if (err.kind === 'auth') clearCreds();
   }
+}
+
+// ---------------------------------------------------------------- map (spec §6.1)
+
+const mapState = { center: null, zoom: null, colorMode: 'recency', radiusMi: 25 };
+let leafletMap = null; // torn down whenever the view is left
+
+const RECENCY_COLORS = { fresh: '#2e9e44', warm: '#e0a800', cold: '#d0453a' };
+const GROUP_PALETTE = ['#1668b8', '#2e9e44', '#e0a800', '#d0453a', '#7b3fb3', '#0e8a86', '#b35f1d', '#5c6b7a'];
+
+function groupColor(group) {
+  const key = (group || '').split(';')[0].trim().toLowerCase();
+  if (!key) return '#5c6b7a';
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return GROUP_PALETTE[h % GROUP_PALETTE.length];
+}
+
+function pinColor(c) {
+  return mapState.colorMode === 'group'
+    ? groupColor(c.group)
+    : RECENCY_COLORS[recencyClass(c.lastActivityAt)];
+}
+
+function milesBetween(lat1, lng1, lat2, lng2) {
+  const rad = x => x * Math.PI / 180, R = 3958.8; // haversine, Earth radius in miles
+  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+async function viewMap() {
+  const companies = (await getAll('companies')).filter(c => c.lat && c.lng);
+
+  $view.innerHTML = `
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div class="mapbar">
+      <div class="mapmode" id="mapmode">
+        <button data-mode="recency" class="${mapState.colorMode === 'recency' ? 'active' : ''}">Activity</button>
+        <button data-mode="group" class="${mapState.colorMode === 'group' ? 'active' : ''}">Group</button>
+      </div>
+      <button class="btn small" id="nearme">📍 Near me</button>
+    </div>
+    <div class="maplegend" id="maplegend"></div>
+    <div id="nearpanel" hidden></div>
+  </div>`;
+
+  const map = L.map('map', { zoomControl: false });
+  leafletMap = map;
+  L.control.zoom({ position: 'bottomright' }).addTo(map);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors (map &amp; geocoding)',
+  }).addTo(map);
+
+  let cluster = null;
+  const drawPins = () => {
+    if (cluster) map.removeLayer(cluster);
+    cluster = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 55 });
+    for (const c of companies) {
+      const m = L.circleMarker([Number(c.lat), Number(c.lng)], {
+        radius: c.priority === 'A' ? 10 : 7,
+        color: '#ffffff', weight: 1.5,
+        fillColor: pinColor(c), fillOpacity: 0.92,
+      });
+      m.bindPopup(`
+        <div class="pin-pop">
+          <a class="pin-name" href="#/company/${esc(c.id)}">${esc(c.name)}</a>
+          <div class="pin-sub">${esc([c.city, c.state].filter(Boolean).join(', '))}${c.group ? ' · ' + esc(c.group) : ''}</div>
+          <div class="pin-sub">Last activity: ${esc(agoLabel(c.lastActivityAt))}</div>
+          <div class="pin-actions">
+            ${c.phone ? `<a href="tel:${esc(c.phone.replace(/[^+\d]/g, ''))}">📞 Call</a>` : ''}
+            <a href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}" target="_blank" rel="noopener">🧭 Go</a>
+            <a href="#/company/${esc(c.id)}/log">＋ Log</a>
+          </div>
+        </div>`, { closeButton: false });
+      cluster.addLayer(m);
+    }
+    map.addLayer(cluster);
+    drawLegend();
+  };
+
+  const drawLegend = () => {
+    const el = document.getElementById('maplegend');
+    if (mapState.colorMode === 'recency') {
+      el.innerHTML = `
+        <span><i style="background:${RECENCY_COLORS.fresh}"></i>≤30d</span>
+        <span><i style="background:${RECENCY_COLORS.warm}"></i>≤90d</span>
+        <span><i style="background:${RECENCY_COLORS.cold}"></i>colder</span>`;
+    } else {
+      const counts = new Map();
+      for (const c of companies) {
+        const g = (c.group || '').split(';')[0].trim() || '(none)';
+        counts.set(g, (counts.get(g) || 0) + 1);
+      }
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+      el.innerHTML = top.map(([g]) =>
+        `<span><i style="background:${g === '(none)' ? '#5c6b7a' : groupColor(g)}"></i>${esc(g)}</span>`).join('');
+    }
+  };
+
+  // initial viewport: saved position, else fit the whole territory
+  if (mapState.center) {
+    map.setView(mapState.center, mapState.zoom);
+  } else if (companies.length) {
+    map.fitBounds(companies.map(c => [Number(c.lat), Number(c.lng)]), { padding: [30, 30] });
+  } else {
+    map.setView([33.5, -83.5], 6); // Southeast fallback
+  }
+  map.on('moveend', () => {
+    const c = map.getCenter();
+    mapState.center = [c.lat, c.lng];
+    mapState.zoom = map.getZoom();
+  });
+
+  drawPins();
+
+  document.getElementById('mapmode').onclick = e => {
+    const btn = e.target.closest('button[data-mode]');
+    if (!btn || btn.dataset.mode === mapState.colorMode) return;
+    mapState.colorMode = btn.dataset.mode;
+    for (const b of e.currentTarget.children) b.classList.toggle('active', b === btn);
+    drawPins();
+  };
+
+  // --- Near Me: locate, draw the radius, list what's inside, closest first ---
+  let hereLayer = null;
+  document.getElementById('nearme').onclick = () => {
+    const btn = document.getElementById('nearme');
+    if (!navigator.geolocation) { toast('This device does not expose location', true); return; }
+    btn.textContent = 'Locating…';
+    navigator.geolocation.getCurrentPosition(pos => {
+      btn.textContent = '📍 Near me';
+      const { latitude: lat, longitude: lng } = pos.coords;
+      if (hereLayer) map.removeLayer(hereLayer);
+      hereLayer = L.layerGroup([
+        L.circleMarker([lat, lng], { radius: 8, color: '#fff', weight: 2, fillColor: '#1668b8', fillOpacity: 1 }),
+        L.circle([lat, lng], { radius: mapState.radiusMi * 1609.34, color: '#1668b8', weight: 1, fillOpacity: 0.05 }),
+      ]).addTo(map);
+      map.fitBounds(L.latLng(lat, lng).toBounds(mapState.radiusMi * 2 * 1609.34));
+
+      const near = companies
+        .map(c => ({ c, mi: milesBetween(lat, lng, Number(c.lat), Number(c.lng)) }))
+        .filter(x => x.mi <= mapState.radiusMi)
+        .sort((a, b) => a.mi - b.mi);
+
+      const panel = document.getElementById('nearpanel');
+      panel.hidden = false;
+      panel.innerHTML = `
+        <div class="near-head">
+          <b>${near.length} within</b>
+          <select id="near-radius">${[10, 25, 50, 100].map(r =>
+            `<option value="${r}" ${r === mapState.radiusMi ? 'selected' : ''}>${r} mi</option>`).join('')}</select>
+          <button class="btn small" id="near-close">✕</button>
+        </div>
+        <ul>${near.slice(0, 40).map(({ c, mi }) => `
+          <li><a href="#/company/${esc(c.id)}">
+            <span class="dot ${recencyClass(c.lastActivityAt)}"></span>
+            <span class="near-name">${esc(c.name)}</span>
+            <span class="near-mi">${mi < 10 ? mi.toFixed(1) : Math.round(mi)} mi</span>
+          </a></li>`).join('') || '<li class="muted" style="padding:10px">Nothing in range.</li>'}
+        </ul>`;
+      document.getElementById('near-close').onclick = () => { panel.hidden = true; };
+      document.getElementById('near-radius').onchange = e2 => {
+        mapState.radiusMi = Number(e2.target.value);
+        document.getElementById('nearme').click();
+      };
+    }, err => {
+      btn.textContent = '📍 Near me';
+      toast('Could not get your location: ' + err.message, true);
+    }, { enableHighAccuracy: true, timeout: 12000 });
+  };
 }
 
 // ---------------------------------------------------------------- companies list
