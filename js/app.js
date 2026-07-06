@@ -207,10 +207,9 @@ async function viewSetup() {
 
 // ---------------------------------------------------------------- map (spec §6.1)
 
-const mapState = { center: null, zoom: null, colorMode: 'recency', radiusMi: 25 };
+const mapState = { center: null, zoom: null, radiusMi: 25 };
 let leafletMap = null; // torn down whenever the view is left
 
-const RECENCY_COLORS = { fresh: '#2e9e44', warm: '#e0a800', cold: '#d0453a' };
 const GROUP_PALETTE = ['#1668b8', '#2e9e44', '#e0a800', '#d0453a', '#7b3fb3', '#0e8a86', '#b35f1d', '#5c6b7a'];
 
 function groupColor(group) {
@@ -219,12 +218,6 @@ function groupColor(group) {
   let h = 0;
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return GROUP_PALETTE[h % GROUP_PALETTE.length];
-}
-
-function pinColor(c) {
-  return mapState.colorMode === 'group'
-    ? groupColor(c.group)
-    : RECENCY_COLORS[recencyClass(c.lastActivityAt)];
 }
 
 function milesBetween(lat1, lng1, lat2, lng2) {
@@ -241,10 +234,7 @@ async function viewMap() {
   <div id="mapwrap">
     <div id="map"></div>
     <div class="mapbar">
-      <div class="mapmode" id="mapmode">
-        <button data-mode="recency" class="${mapState.colorMode === 'recency' ? 'active' : ''}">Activity</button>
-        <button data-mode="group" class="${mapState.colorMode === 'group' ? 'active' : ''}">Group</button>
-      </div>
+      <span></span>
       <button class="btn small" id="nearme">📍 Near me</button>
     </div>
     <div class="maplegend" id="maplegend"></div>
@@ -267,7 +257,7 @@ async function viewMap() {
       const m = L.circleMarker([Number(c.lat), Number(c.lng)], {
         radius: c.priority === 'A' ? 10 : 7,
         color: '#ffffff', weight: 1.5,
-        fillColor: pinColor(c), fillOpacity: 0.92,
+        fillColor: groupColor(c.group), fillOpacity: 0.92,
       });
       m.bindPopup(`
         <div class="pin-pop">
@@ -287,22 +277,14 @@ async function viewMap() {
   };
 
   const drawLegend = () => {
-    const el = document.getElementById('maplegend');
-    if (mapState.colorMode === 'recency') {
-      el.innerHTML = `
-        <span><i style="background:${RECENCY_COLORS.fresh}"></i>≤30d</span>
-        <span><i style="background:${RECENCY_COLORS.warm}"></i>≤90d</span>
-        <span><i style="background:${RECENCY_COLORS.cold}"></i>colder</span>`;
-    } else {
-      const counts = new Map();
-      for (const c of companies) {
-        const g = (c.group || '').split(';')[0].trim() || '(none)';
-        counts.set(g, (counts.get(g) || 0) + 1);
-      }
-      const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-      el.innerHTML = top.map(([g]) =>
-        `<span><i style="background:${g === '(none)' ? '#5c6b7a' : groupColor(g)}"></i>${esc(g)}</span>`).join('');
+    const counts = new Map();
+    for (const c of companies) {
+      const g = (c.group || '').split(';')[0].trim() || '(none)';
+      counts.set(g, (counts.get(g) || 0) + 1);
     }
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    document.getElementById('maplegend').innerHTML = top.map(([g]) =>
+      `<span><i style="background:${g === '(none)' ? '#5c6b7a' : groupColor(g)}"></i>${esc(g)}</span>`).join('');
   };
 
   // initial viewport: saved position, else fit the whole territory
@@ -320,14 +302,6 @@ async function viewMap() {
   });
 
   drawPins();
-
-  document.getElementById('mapmode').onclick = e => {
-    const btn = e.target.closest('button[data-mode]');
-    if (!btn || btn.dataset.mode === mapState.colorMode) return;
-    mapState.colorMode = btn.dataset.mode;
-    for (const b of e.currentTarget.children) b.classList.toggle('active', b === btn);
-    drawPins();
-  };
 
   // --- Near Me: locate, draw the radius, list what's inside, closest first ---
   let hereLayer = null;

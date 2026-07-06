@@ -4,7 +4,7 @@
 //
 // To ship an update: bump CACHE_VERSION. Old caches are cleaned on activate.
 
-const CACHE_VERSION = 'fieldrep-v5';
+const CACHE_VERSION = 'fieldrep-v6';
 
 const SHELL = [
   './',
