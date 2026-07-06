@@ -181,6 +181,22 @@ input, select, textarea {
 .pin-actions { display: flex; gap: 14px; margin-top: 8px; font-size: 14px; font-weight: 600; }
 .pin-actions a { text-decoration: none; color: var(--blue); }
 
+/* --- route planner --- */
+.routestop { padding: 8px 10px; }
+.stopnum {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  background: var(--navy); color: #fff; font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.stopbtns { display: flex; gap: 2px; align-items: center; }
+.stopbtns button, .stopbtns a {
+  border: 1px solid var(--line); background: var(--card); border-radius: 8px;
+  min-width: 34px; height: 34px; font-size: 15px; cursor: pointer; color: var(--ink);
+  display: flex; align-items: center; justify-content: center; text-decoration: none;
+}
+.stopbtns button:disabled { opacity: .3; }
+.stopbtns [data-rm] { color: var(--red); }
+
 /* --- toast --- */
 .toast {
   position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px);

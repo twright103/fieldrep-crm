@@ -100,6 +100,7 @@ const routes = [
   [/^#\/company\/([^/]+)\/contact\/new$/, m => viewContactForm(null, m[1])],
   [/^#\/contact\/([^/]+)\/edit$/, m => viewContactForm(m[1], null)],
   [/^#\/company\/([^/]+)$/, m => viewCompany(m[1])],
+  [/^#\/route$/, viewRoute],
   [/^#\/followups$/, viewFollowups],
   [/^#\/settings$/, viewSettings],
 ];
@@ -116,6 +117,7 @@ async function render() {
     if (m) {
       $tabbar.style.display = hash === '#/setup' ? 'none' : '';
       highlightTab(hash);
+      updateRouteBadge();
       try {
         await fn(m);
       } catch (err) {
@@ -268,6 +270,7 @@ async function viewMap() {
             ${c.phone ? `<a href="tel:${esc(c.phone.replace(/[^+\d]/g, ''))}">📞 Call</a>` : ''}
             <a href="https://www.google.com/maps/dir/?api=1&destination=${c.lat},${c.lng}" target="_blank" rel="noopener">🧭 Go</a>
             <a href="#/company/${esc(c.id)}/log">＋ Log</a>
+            <a href="#" data-route-add="${esc(c.id)}">🚗 Route</a>
           </div>
         </div>`, { closeButton: false });
       cluster.addLayer(m);
@@ -275,6 +278,11 @@ async function viewMap() {
     map.addLayer(cluster);
     drawLegend();
   };
+
+  map.on('popupopen', e => {
+    const b = e.popup.getElement()?.querySelector('[data-route-add]');
+    if (b) b.onclick = ev => { ev.preventDefault(); addToRoute(b.dataset.routeAdd); };
+  });
 
   const drawLegend = () => {
     const counts = new Map();
@@ -458,6 +466,7 @@ async function viewCompany(id) {
       ${c.phone ? `<a class="btn" href="tel:${esc(c.phone.replace(/[^+\d]/g, ''))}">📞 Call</a>` : ''}
       ${mapsUrl ? `<a class="btn" href="${esc(mapsUrl)}" target="_blank" rel="noopener">🧭 Directions</a>` : ''}
       <a class="btn primary" href="#/company/${esc(id)}/log">＋ Log activity</a>
+      ${c.lat ? `<button class="btn" id="addroute">🚗 Add to route</button>` : ''}
     </div>
 
     <div class="factbox">
@@ -493,6 +502,9 @@ async function viewCompany(id) {
     </ul>
     ${activities.length > SHOW ? `<button class="btn small center" id="morebtn">Show all ${activities.length}</button>` : ''}
   </div>`;
+
+  const addRouteBtn = document.getElementById('addroute');
+  if (addRouteBtn) addRouteBtn.onclick = () => addToRoute(id);
 
   const more = document.getElementById('morebtn');
   if (more) more.onclick = () => {
@@ -684,6 +696,211 @@ async function viewActivityForm(companyId) {
       await putRow('companies', c);
       location.hash = '#/company/' + companyId;
     }
+  };
+}
+
+// ---------------------------------------------------------------- route planner (spec §9)
+
+async function getRouteIds() {
+  return (await kvGet('route')) || [];
+}
+
+async function setRouteIds(ids) {
+  const { kvSet } = await import('./db.js');
+  await kvSet('route', ids);
+  updateRouteBadge();
+}
+
+async function addToRoute(companyId) {
+  const c = await getById('companies', companyId);
+  if (!c) return;
+  if (!c.lat || !c.lng) { toast('No map location yet for ' + c.name + ' — place its pin first (Settings will list it after Phase 5).', true); return; }
+  const ids = await getRouteIds();
+  if (ids.includes(companyId)) { toast(c.name + ' is already on the route'); return; }
+  if (ids.length >= 25) { toast('Route is full (25 stops) — that is a very long day', true); return; }
+  await setRouteIds([...ids, companyId]);
+  toast('Added to route (' + (ids.length + 1) + ' stops)');
+}
+
+async function updateRouteBadge() {
+  const tab = document.getElementById('routetab');
+  if (!tab) return;
+  const n = (await getRouteIds()).length;
+  tab.innerHTML = '<span>🧭</span>Route' + (n ? ' (' + n + ')' : '');
+}
+
+// Nearest-neighbor pass then 2-opt refinement on straight-line miles.
+// start = {lat,lng} or null (null = begin at the first stop as listed).
+function optimizeOrder(stops, start) {
+  if (stops.length < 2) return stops;
+  const dist = (a, b) => milesBetween(a.lat, a.lng, b.lat, b.lng);
+
+  // nearest neighbor
+  const remaining = [...stops];
+  const path = [];
+  let cur = start || remaining.shift();
+  if (!start) path.push(cur);
+  while (remaining.length) {
+    let bi = 0, bd = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const d = dist(cur, remaining[i]);
+      if (d < bd) { bd = d; bi = i; }
+    }
+    cur = remaining.splice(bi, 1)[0];
+    path.push(cur);
+  }
+
+  // 2-opt: reverse any segment that shortens the total; repeat until stable
+  const cost = p => {
+    let t = start ? dist(start, p[0]) : 0;
+    for (let i = 0; i < p.length - 1; i++) t += dist(p[i], p[i + 1]);
+    return t;
+  };
+  let best = path, bestCost = cost(path), improved = true;
+  const lockFirst = start ? 0 : 1; // no external start -> first stop stays first
+  while (improved) {
+    improved = false;
+    for (let i = lockFirst; i < best.length - 1; i++) {
+      for (let j = i + 1; j < best.length; j++) {
+        const candidate = best.slice(0, i).concat(best.slice(i, j + 1).reverse(), best.slice(j + 1));
+        const c = cost(candidate);
+        if (c < bestCost - 1e-9) { best = candidate; bestCost = c; improved = true; }
+      }
+    }
+  }
+  return best;
+}
+
+function routeMiles(stops, start) {
+  let t = 0;
+  let prev = start;
+  for (const s of stops) { if (prev) t += milesBetween(prev.lat, prev.lng, s.lat, s.lng); prev = s; }
+  return t;
+}
+
+// Chunk ordered stops into navigation legs and build the hand-off URLs.
+// Google Maps app: origin + up to 9 intermediates + destination per leg.
+// Browser fallback: mobile web tops out at 3 intermediates per leg.
+function buildLegs(stops, useApp, startAtCurrent) {
+  const perLeg = useApp ? 10 : 4;
+  const legs = [];
+  const co = s => (Math.round(s.lat * 1e6) / 1e6) + ',' + (Math.round(s.lng * 1e6) / 1e6);
+  for (let i = 0; i < stops.length; i += perLeg) {
+    const chunk = stops.slice(i, i + perLeg);
+    const origin = i === 0
+      ? (startAtCurrent ? null : null) // first leg starts where you are either way
+      : stops[i - 1];                  // later legs start at the previous leg's last stop
+    const dest = chunk[chunk.length - 1];
+    const mids = chunk.slice(0, -1);
+    let url;
+    if (useApp) {
+      // coords are URL-safe (digits, dot, minus, comma); keep +to: separators raw
+      url = 'comgooglemaps://?daddr=' + chunk.map(co).join('+to:') +
+        (origin ? '&saddr=' + co(origin) : '') + '&directionsmode=driving';
+    } else {
+      url = 'https://www.google.com/maps/dir/?api=1&destination=' + co(dest) +
+        (mids.length ? '&waypoints=' + mids.map(co).join('%7C') : '') +
+        (origin ? '&origin=' + co(origin) : '') + '&travelmode=driving';
+    }
+    legs.push({ first: i + 1, last: i + chunk.length, url });
+  }
+  return legs;
+}
+
+async function viewRoute() {
+  const ids = await getRouteIds();
+  const all = await Promise.all(ids.map(id => getById('companies', id)));
+  const stops = all.filter(Boolean).map(c => ({ id: c.id, name: c.name, city: c.city, lat: Number(c.lat), lng: Number(c.lng) }));
+  if (stops.length !== ids.length) await setRouteIds(stops.map(s => s.id)); // drop deleted companies
+  const useApp = ((await kvGet('navMode')) || 'app') === 'app';
+
+  if (!stops.length) {
+    $view.innerHTML = `
+    <div class="pad">
+      <h1>Route</h1>
+      <p class="muted">No stops yet. Add companies from the map (tap a pin → ＋ Route)
+      or from a company page (＋ Add to route), then come back here to put them
+      in the best driving order.</p>
+    </div>`;
+    return;
+  }
+
+  const miles = routeMiles(stops, null);
+  const legs = buildLegs(stops, useApp, true);
+
+  $view.innerHTML = `
+  <div class="pad">
+    <h1>Route <span class="muted" style="font-size:15px">(${stops.length} stops · ~${Math.round(miles)} mi as the crow flies)</span></h1>
+    <div class="actionrow">
+      <button class="btn primary" id="optbtn">⚡ Best order from my location</button>
+      <button class="btn" id="optbtn2">Best order from stop #1</button>
+    </div>
+    <ul class="cardlist" id="stoplist">
+      ${stops.map((s, i) => `
+        <li class="card static routestop" data-id="${esc(s.id)}">
+          <span class="stopnum">${i + 1}</span>
+          <span class="card-main">
+            <a class="card-title" href="#/company/${esc(s.id)}">${esc(s.name)}</a>
+            <span class="card-sub">${esc(s.city || '')}</span>
+          </span>
+          <span class="stopbtns">
+            <button data-up="${i}" ${i === 0 ? 'disabled' : ''}>▲</button>
+            <button data-down="${i}" ${i === stops.length - 1 ? 'disabled' : ''}>▼</button>
+            <a href="https://maps.apple.com/?daddr=${Math.round(s.lat * 1e6) / 1e6},${Math.round(s.lng * 1e6) / 1e6}" title="This stop in Apple Maps"></a>
+            <button data-rm="${i}">✕</button>
+          </span>
+        </li>`).join('')}
+    </ul>
+
+    <h2>Navigate</h2>
+    ${legs.map(l => `
+      <a class="btn primary big" style="text-align:center" href="${esc(l.url)}">
+        🧭 ${legs.length > 1 ? `Leg ${legs.indexOf(l) + 1}: stops ${l.first}–${l.last}` : `Navigate all ${stops.length} stops`}
+      </a>`).join('')}
+    <p class="muted" style="font-size:13px">
+      Opens the Google Maps app${legs.length > 1 ? '; drive a leg, come back, tap the next one (later legs start at the previous leg’s last stop)' : ''}.
+      <a href="#" id="navmode">${useApp ? 'App didn’t open? Switch to browser mode' : 'Using browser mode (max 3 stops per leg) — switch back to app mode'}</a>.
+       is Apple Maps, one stop at a time.
+    </p>
+    <button class="btn danger" id="clearroute">Clear route</button>
+  </div>`;
+
+  const swap = async (i, j) => {
+    const arr = stops.map(s => s.id);
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    await setRouteIds(arr); render();
+  };
+  document.getElementById('stoplist').onclick = async e => {
+    const up = e.target.closest('[data-up]'); const down = e.target.closest('[data-down]'); const rm = e.target.closest('[data-rm]');
+    if (up) return swap(Number(up.dataset.up), Number(up.dataset.up) - 1);
+    if (down) return swap(Number(down.dataset.down), Number(down.dataset.down) + 1);
+    if (rm) { const arr = stops.map(s => s.id); arr.splice(Number(rm.dataset.rm), 1); await setRouteIds(arr); render(); }
+  };
+
+  const runOptimize = async start => {
+    const ordered = optimizeOrder(stops, start);
+    await setRouteIds(ordered.map(s => s.id));
+    toast('Optimized — ~' + Math.round(routeMiles(ordered, start)) + ' mi in stop order');
+    render();
+  };
+  document.getElementById('optbtn').onclick = () => {
+    if (!navigator.geolocation) { toast('No location on this device', true); return; }
+    document.getElementById('optbtn').textContent = 'Locating…';
+    navigator.geolocation.getCurrentPosition(
+      pos => runOptimize({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      err => { toast('Could not get location: ' + err.message, true); render(); },
+      { enableHighAccuracy: true, timeout: 12000 });
+  };
+  document.getElementById('optbtn2').onclick = () => runOptimize(null);
+  document.getElementById('navmode').onclick = async e => {
+    e.preventDefault();
+    const { kvSet } = await import('./db.js');
+    await kvSet('navMode', useApp ? 'browser' : 'app');
+    render();
+  };
+  document.getElementById('clearroute').onclick = async () => {
+    if (!confirm('Clear all ' + stops.length + ' stops?')) return;
+    await setRouteIds([]); render();
   };
 }
 
