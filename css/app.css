@@ -1,0 +1,159 @@
+/* FieldRep CRM — mobile-first, big touch targets, readable in daylight. */
+
+* { box-sizing: border-box; margin: 0; }
+
+:root {
+  --navy: #1a3a5c;
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --ink: #16232f;
+  --muted: #6b7a88;
+  --line: #dde4ea;
+  --green: #2e9e44;
+  --yellow: #e0a800;
+  --red: #d0453a;
+  --blue: #1668b8;
+}
+
+html { -webkit-text-size-adjust: 100%; }
+body {
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg); color: var(--ink);
+  padding-bottom: calc(64px + env(safe-area-inset-bottom));
+}
+
+/* --- chrome --- */
+#topbar {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--navy); color: #fff;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 700; letter-spacing: .3px;
+}
+#syncdot { width: 10px; height: 10px; border-radius: 50%; background: transparent; transition: background .3s; }
+#syncdot.on { background: #7fd4ff; animation: pulse 1s infinite alternate; }
+@keyframes pulse { to { opacity: .3; } }
+
+#tabbar {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+  display: flex; background: var(--card); border-top: 1px solid var(--line);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+#tabbar a {
+  flex: 1; text-align: center; padding: 8px 0 6px;
+  font-size: 12px; color: var(--muted); text-decoration: none;
+}
+#tabbar a span { display: block; font-size: 22px; }
+#tabbar a.active { color: var(--navy); font-weight: 700; }
+
+/* --- layout bits --- */
+.pad { padding: 16px; }
+.pad-s { padding: 8px 16px; }
+.muted { color: var(--muted); }
+.center { text-align: center; margin: 10px auto; display: block; }
+.prewrap { white-space: pre-wrap; }
+h1 { font-size: 24px; margin: 8px 0 4px; }
+h2 { font-size: 17px; margin: 22px 0 8px; display: flex; align-items: center; gap: 10px; }
+.backlink { color: var(--blue); text-decoration: none; font-size: 15px; }
+.overdue { color: var(--red); font-weight: 700; }
+
+/* --- buttons & forms --- */
+.btn {
+  display: inline-block; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--card); color: var(--ink); text-decoration: none;
+  padding: 12px 16px; font-size: 16px; font-weight: 600; cursor: pointer;
+  margin: 4px 6px 4px 0;
+}
+.btn.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+.btn.danger { color: var(--red); border-color: var(--red); background: #fff; }
+.btn.small { padding: 6px 12px; font-size: 14px; margin: 0; }
+.btn.big { width: 100%; padding: 16px; font-size: 18px; margin-top: 10px; }
+
+label { display: block; margin: 12px 0; font-size: 14px; font-weight: 600; color: var(--muted); }
+input, select, textarea {
+  display: block; width: 100%; margin-top: 4px;
+  font: inherit; color: var(--ink);
+  padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+}
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+/* --- companies list --- */
+.listhead {
+  position: sticky; top: 46px; z-index: 5;
+  background: var(--bg); padding: 10px 16px 8px; border-bottom: 1px solid var(--line);
+}
+.listhead input[type=search] { margin: 0; }
+.filters { display: flex; gap: 8px; margin-top: 8px; }
+.filters select { flex: 1; width: auto; margin: 0; padding: 8px; font-size: 14px; }
+
+.cardlist { list-style: none; padding: 8px 12px; }
+.card {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; margin-bottom: 8px; text-decoration: none; color: inherit;
+}
+.card.static { cursor: default; }
+.card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.card-title { font-weight: 700; color: var(--ink); text-decoration: none; }
+.card-sub { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.card-side { font-size: 12px; color: var(--muted); text-align: right; flex-shrink: 0; }
+.contactlinks { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: 14px; }
+.contactlinks a { color: var(--blue); text-decoration: none; }
+
+/* recency dots (green ≤30d, yellow ≤90d, red colder — spec §6.1) */
+.dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.dot.big { width: 16px; height: 16px; }
+.dot.fresh { background: var(--green); }
+.dot.warm { background: var(--yellow); }
+.dot.cold { background: var(--red); }
+
+/* --- company detail --- */
+.detail-head { display: flex; align-items: center; gap: 10px; }
+.actionrow { display: flex; flex-wrap: wrap; margin: 10px 0; }
+.factbox {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; margin: 10px 0; display: grid; gap: 6px; font-size: 15px;
+}
+.factbox a { color: var(--blue); }
+.editlink { font-size: 14px; color: var(--blue); text-decoration: none; }
+
+/* --- timeline --- */
+.timeline { list-style: none; padding: 0 4px; }
+.timeline li {
+  display: flex; gap: 10px; padding: 10px 8px;
+  border-bottom: 1px solid var(--line); align-items: flex-start;
+}
+.tl-icon { font-size: 18px; }
+.tl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tl-title { font-weight: 600; }
+.tl-who { font-size: 13px; color: var(--muted); }
+.tl-body { font-size: 14px; color: #3d4c5a; }
+.tl-follow { font-size: 13px; color: var(--yellow); font-weight: 700; }
+.tl-date { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* --- activity type picker --- */
+.typerow { display: flex; gap: 8px; margin: 10px 0; }
+.typebtn {
+  flex: 1; padding: 10px 0; font-size: 13px; text-transform: capitalize;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card); cursor: pointer;
+}
+.typebtn.active { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+/* --- setup --- */
+.setup h1 { margin-top: 30px; }
+.setup .btn { margin-top: 10px; width: 100%; }
+
+/* --- toast --- */
+.toast {
+  position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%) translateY(20px);
+  background: var(--ink); color: #fff; padding: 12px 20px; border-radius: 12px;
+  font-size: 15px; opacity: 0; transition: all .25s; z-index: 50; max-width: 90vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast-err { background: var(--red); }
+
+/* --- wider screens (iPad / desktop) --- */
+@media (min-width: 700px) {
+  #view { max-width: 760px; margin: 0 auto; }
+  .listhead { max-width: 760px; margin: 0 auto; }
+}
