@@ -212,17 +212,17 @@ async function viewSetup() {
 const mapState = { center: null, zoom: null, radiusMi: 25 };
 let leafletMap = null; // torn down whenever the view is left
 
-// Todd's fixed color rules (2026-07-06): MRR black; MRR Inactive/Lead/Prospect
-// orange; Disqualified bright red; Lamothermic and everything else blue.
+// Todd's fixed color rules (2026-07-06): MRR green; MRR Inactive/Lead/Prospect
+// orange; Disqualified bright red; Lamothermic blue; everything else black.
 const GROUP_COLORS = {
-  'mrr': '#1a1a1a',
+  'mrr': '#2e9e44',
   'mrr inactive': '#ff8c00',
   'mrr lead': '#ff8c00',
   'mrr prospect': '#ff8c00',
   'disqualified': '#f5222d',
   'lamothermic': '#1668b8',
 };
-const GROUP_COLOR_DEFAULT = '#1668b8';
+const GROUP_COLOR_DEFAULT = '#1a1a1a';
 
 function groupColor(group) {
   const key = (group || '').split(';')[0].trim().toLowerCase();
@@ -293,10 +293,11 @@ async function viewMap() {
 
   const drawLegend = () => {
     document.getElementById('maplegend').innerHTML = `
-      <span><i style="background:#1a1a1a"></i>MRR</span>
+      <span><i style="background:#2e9e44"></i>MRR</span>
       <span><i style="background:#ff8c00"></i>MRR Lead/Prospect/Inactive</span>
       <span><i style="background:#f5222d"></i>Disqualified</span>
-      <span><i style="background:#1668b8"></i>Lamothermic &amp; other</span>`;
+      <span><i style="background:#1668b8"></i>Lamothermic</span>
+      <span><i style="background:#1a1a1a"></i>Other</span>`;
   };
 
   // initial viewport: saved position, else fit the whole territory
