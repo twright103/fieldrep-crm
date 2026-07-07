@@ -215,7 +215,7 @@ async function viewSetup() {
 
 // ---------------------------------------------------------------- map (spec §6.1)
 
-const mapState = { center: null, zoom: null, radiusMi: 25 };
+const mapState = { center: null, zoom: null, radiusMi: 25, focusId: null };
 let leafletMap = null; // torn down whenever the view is left
 
 // Todd's fixed color rules (2026-07-06): MRR green; MRR Inactive/Lead/Prospect
@@ -266,8 +266,10 @@ async function viewMap() {
   }).addTo(map);
 
   let cluster = null;
+  const markerById = new Map();
   const drawPins = () => {
     if (cluster) map.removeLayer(cluster);
+    markerById.clear();
     cluster = L.markerClusterGroup({ chunkedLoading: true, maxClusterRadius: 55 });
     for (const c of companies) {
       const m = L.circleMarker([Number(c.lat), Number(c.lng)], {
@@ -288,6 +290,7 @@ async function viewMap() {
           </div>
         </div>`, { closeButton: false });
       cluster.addLayer(m);
+      markerById.set(c.id, m);
     }
     map.addLayer(cluster);
     drawLegend();
@@ -322,6 +325,13 @@ async function viewMap() {
   });
 
   drawPins();
+
+  // arrived via a company card's "Show on map" button: zoom to it, open its popup
+  if (mapState.focusId) {
+    const target = markerById.get(mapState.focusId);
+    mapState.focusId = null;
+    if (target) cluster.zoomToShowLayer(target, () => target.openPopup());
+  }
 
   // --- Near Me: locate, draw the radius, list what's inside, closest first ---
   let hereLayer = null;
@@ -478,6 +488,7 @@ async function viewCompany(id) {
       ${c.phone ? `<a class="btn" href="tel:${esc(c.phone.replace(/[^+\d]/g, ''))}">📞 Call</a>` : ''}
       ${mapsUrl ? `<a class="btn" href="${esc(mapsUrl)}" target="_blank" rel="noopener">🧭 Directions</a>` : ''}
       <a class="btn primary" href="#/company/${esc(id)}/log">＋ Log activity</a>
+      ${c.lat ? `<button class="btn" id="showonmap">🗺️ Map</button>` : ''}
       ${c.lat ? `<button class="btn" id="addroute">🚗 Add to route</button>` : ''}
     </div>
 
@@ -518,6 +529,14 @@ async function viewCompany(id) {
 
   const addRouteBtn = document.getElementById('addroute');
   if (addRouteBtn) addRouteBtn.onclick = () => addToRoute(id);
+
+  const showBtn = document.getElementById('showonmap');
+  if (showBtn) showBtn.onclick = () => {
+    mapState.focusId = id;
+    mapState.center = [Number(c.lat), Number(c.lng)];
+    mapState.zoom = 13;
+    location.hash = '#/map';
+  };
 
   const more = document.getElementById('morebtn');
   if (more) more.onclick = () => {
